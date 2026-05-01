@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+
+const PI_URL = 'http://127.0.0.1:5000'; 
 
 export default function App() {
   const [status, setStatus] = useState('ready')
@@ -8,6 +10,7 @@ export default function App() {
     'System ready.',
     'Waiting for operator to start calibration.',
   ])
+  const pollRef = useRef(null)
 
   const steps = [
     'Checking connection',
@@ -17,36 +20,60 @@ export default function App() {
     'Finalizing',
   ]
 
-  const startCalibration = () => {
+  const startCalibration = async () => {
     if (status === 'running') return
 
     setStatus('running')
     setStepIndex(0)
     setProgress(0)
-    setLog(['Calibration started.', 'Checking connection...'])
+    setLog(['Starting calibration...'])
 
-    const timeline = [
-      { delay: 900, step: 0, progress: 20, message: 'Connection verified.' },
-      { delay: 1900, step: 1, progress: 40, message: 'Device information loaded.' },
-      { delay: 3000, step: 2, progress: 65, message: 'Calibration profile applied.' },
-      { delay: 4200, step: 3, progress: 85, message: 'Output verified within tolerance.' },
-      { delay: 5400, step: 4, progress: 100, message: 'Calibration complete.' },
-    ]
+    try {
+      const response = await fetch(`${PI_URL}/auto_cal`, { method: 'POST' })
+      if (!response.ok) throw new Error('Failed to start calibration')
 
-    timeline.forEach((item, index) => {
-      setTimeout(() => {
-        setStepIndex(item.step)
-        setProgress(item.progress)
-        setLog((prev) => [...prev, item.message])
+      // Start polling
+      pollRef.current = setInterval(async () => {
+        try {
+          const logRes = await fetch(`${PI_URL}/auto_log`)
+          const logData = await logRes.json()
+          setLog(logData.log)
+          setProgress(Math.min(logData.log.length * 20, 100))
 
-        if (index === timeline.length - 1) {
-          setStatus('success')
+          const statusRes = await fetch(`${PI_URL}/status`)
+          const statusData = await statusRes.json()
+
+          if (!logData.running) {
+            if (statusData.state === 'up' || statusData.state === 'down') {
+              setStatus('success')
+            } else {
+              setStatus('error')
+            }
+            clearInterval(pollRef.current)
+            pollRef.current = null
+          }
+        } catch (err) {
+          console.error(err)
+          setStatus('error')
+          setLog((prev) => [...prev, 'Error during calibration.'])
+          if (pollRef.current) {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+          }
         }
-      }, item.delay)
-    })
+      }, 1000)
+    } catch (err) {
+      console.error(err)
+      setStatus('error')
+      setLog(['Failed to start calibration.'])
+    }
   }
 
   const resetCalibration = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
     setStatus('ready')
     setStepIndex(0)
     setProgress(0)
@@ -60,8 +87,10 @@ export default function App() {
     status === 'ready'
       ? 'Awaiting operator input'
       : status === 'running'
-      ? steps[stepIndex]
-      : 'Calibration completed successfully'
+      ? (log.length > 0 ? log[log.length - 1] : 'Starting...')
+      : status === 'success'
+      ? 'Calibration completed successfully'
+      : 'Error occurred'
 
   return (
     <div style={styles.page}>
